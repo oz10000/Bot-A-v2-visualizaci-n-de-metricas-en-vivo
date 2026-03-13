@@ -1,42 +1,39 @@
-name: Run KuCoin Bot Simulation
+name: Run Trading Bot
 
 on:
-  workflow_dispatch:    # Permite ejecutar manualmente
+  workflow_dispatch:   # Botón para ejecutar manual
   schedule:
-    - cron: "*/10 * * * *"  # Ejecuta cada 10 minutos (ajustable)
+    - cron: "0 */6 * * *"  # Cada 6 horas (ajustable)
+
+concurrency:
+  group: bot-runner-group
+  cancel-in-progress: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # Tiempo máximo de ejecución por run
-
+    timeout-minutes: 350  # Límite <6h para evitar timeout
     steps:
-      # 1️⃣ Clonar el repositorio
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Configurar Python
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      # 3️⃣ Instalar dependencias
       - name: Install dependencies
-        run: pip install pandas numpy requests
+        run: pip install -r requirements.txt
 
-      # 4️⃣ Crear carpeta de reportes si no existe
-      - name: Ensure reports folder
+      - name: Ensure reports folder exists
         run: mkdir -p reports
 
-      # 5️⃣ Ejecutar bot en foreground
-      - name: Run bot.py
+      - name: Run bot script
         run: python bot.py
 
-      # 6️⃣ Subir reportes generados como artifact
       - name: Upload reports
         uses: actions/upload-artifact@v4
         with:
-          name: kucoin-bot-reports
+          name: bot-reports
           path: reports/

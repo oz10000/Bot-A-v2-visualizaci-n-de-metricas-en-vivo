@@ -1,0 +1,39 @@
+name: Run Trading Bot
+
+on:
+  workflow_dispatch:   # Botón para ejecutar manual
+  schedule:
+    - cron: "0 */6 * * *"  # Cada 6 horas (ajustable)
+
+concurrency:
+  group: bot-runner-group
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # Límite <6h para evitar timeout
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ensure reports folder exists
+        run: mkdir -p reports
+
+      - name: Run bot script
+        run: python bot2.py
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-reports
+          path: reports/

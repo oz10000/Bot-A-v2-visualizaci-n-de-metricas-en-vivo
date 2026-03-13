@@ -19,7 +19,6 @@ LOOP_DELAY = 60            # segundos entre scans
 REPORT_INTERVAL = 300      # cada 5 minutos
 BASE_URL = "https://api.binance.com/api/v3/klines"
 
-# Archivos de runtime / reportes
 REPORT_DIR = "reports"
 TRADES_FILE = os.path.join(REPORT_DIR,"trades.csv")
 METRICS_FILE = os.path.join(REPORT_DIR,"metrics.json")
@@ -42,6 +41,7 @@ def fetch(symbol):
         "close_time","qav","num_trades","taker_base_vol","taker_quote_vol","ignore"
     ])
     df[['open','high','low','close']] = df[['open','high','low','close']].astype(float)
+    print(f"[{datetime.utcnow()}] {len(df)} candles fetched for {symbol}")
     return df
 
 def atr(df):
@@ -51,15 +51,20 @@ def atr(df):
     return tr.rolling(ATR_PERIOD).mean()
 
 def generate_signal(df, asset):
-    """Genera señal top-edge"""
+    """Genera señal top-edge y explica por qué"""
     ema = df["close"].ewm(span=EMA_PERIOD).mean()
     price = df["close"].iloc[-1]
     atr_val = atr(df).iloc[-1]
     ema_val = ema.iloc[-1]
     deviation = (price-ema_val)/ema_val
     edge = abs(deviation)
+    
+    print(f"[{datetime.utcnow()}] {asset} deviation={deviation:.5f}, edge={edge:.5f}")
+    
     if edge < EDGE_THRESHOLD:
+        print(f"[{datetime.utcnow()}] Edge below threshold ({EDGE_THRESHOLD}), no signal generated")
         return None
+    
     tp_move = edge*TP_EDGE
     sl_move = (atr_val/price)*ATR_MULTIPLIER
     if deviation < 0:
@@ -70,7 +75,13 @@ def generate_signal(df, asset):
         direction = "SHORT"
         tp = price*(1-tp_move)
         sl = price*(1+sl_move)
-    return {"asset":asset,"direction":direction,"entry":price,"tp":tp,"sl":sl,"edge":edge,"mfe":0,"mae":0}
+    
+    print(f"[{datetime.utcnow()}] Signal generated for {asset}: {direction}, TP={tp:.4f}, SL={sl:.4f}")
+    
+    return {
+        "asset":asset, "direction":direction, "entry":price,
+        "tp":tp, "sl":sl, "edge":edge, "mfe":0, "mae":0
+    }
 
 def scan():
     """Busca activo con mayor edge"""
@@ -80,8 +91,12 @@ def scan():
         signal = generate_signal(df, asset)
         if signal:
             signals.append(signal)
-    if not signals: return None
-    return max(signals, key=lambda x:x["edge"])
+    if not signals:
+        print(f"[{datetime.utcnow()}] No signals found in this scan")
+        return None
+    top_signal = max(signals, key=lambda x:x["edge"])
+    print(f"[{datetime.utcnow()}] Top signal selected: {top_signal['asset']} edge={top_signal['edge']:.5f}")
+    return top_signal
 
 def check_position(pos):
     """Revisa TP/SL y actualiza MFE/MAE"""
@@ -90,13 +105,21 @@ def check_position(pos):
     move = (price-pos["entry"])/pos["entry"] if pos["direction"]=="LONG" else (pos["entry"]-price)/pos["entry"]
     pos["mfe"] = max(pos["mfe"], move)
     pos["mae"] = min(pos["mae"], move)
+    
+    # Sugerencia de ajuste de SL/TP según métricas
+    adjust = ""
+    if move > pos["mfe"]*0.7:
+        adjust += "Consider trailing SL | "
+    if move < pos["mae"]*0.7:
+        adjust += "Consider tightening TP"
+    
     if pos["direction"]=="LONG":
-        if price >= pos["tp"]: return "TP", price
-        if price <= pos["sl"]: return "SL", price
+        if price >= pos["tp"]: return "TP", price, adjust
+        if price <= pos["sl"]: return "SL", price, adjust
     else:
-        if price <= pos["tp"]: return "TP", price
-        if price >= pos["sl"]: return "SL", price
-    return None, price
+        if price <= pos["tp"]: return "TP", price, adjust
+        if price >= pos["sl"]: return "SL", price, adjust
+    return None, price, adjust
 
 def compute_metrics(trades_df):
     """Calcula MAE/MSE/RMSE global"""
@@ -108,7 +131,6 @@ def compute_metrics(trades_df):
     return {"MAE":mae,"MSE":mse,"RMSE":rmse}
 
 def save_report():
-    """Guarda reporte completo"""
     os.makedirs(REPORT_DIR, exist_ok=True)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     report_file = os.path.join(REPORT_DIR,f"report_{timestamp}.txt")
@@ -144,9 +166,9 @@ while True:
                 POSITION = signal
                 print_signal(signal)
             else:
-                print(f"[{datetime.utcnow()}] No signal")
+                print(f"[{datetime.utcnow()}] No signal found this cycle")
         else:
-            result, price = check_position(POSITION)
+            result, price, adjust = check_position(POSITION)
             if result:
                 entry = POSITION["entry"]
                 pnl = (price-entry)/entry if POSITION["direction"]=="LONG" else (entry-price)/entry
@@ -160,18 +182,24 @@ while True:
                     "exit": price,
                     "pnl": pnl,
                     "capital": metrics["capital"],
-                    "winrate": metrics["wins"]/metrics["trades"]
+                    "winrate": metrics["wins"]/metrics["trades"],
+                    "adjust_suggestion": adjust
                 }
                 os.makedirs(os.path.dirname(TRADES_FILE), exist_ok=True)
                 pd.DataFrame([trade_record]).to_csv(TRADES_FILE, mode="a", header=not os.path.exists(TRADES_FILE), index=False)
                 pd.DataFrame([metrics]).to_json(METRICS_FILE)
+                
                 trades_df = pd.read_csv(TRADES_FILE)
                 metric_vals = compute_metrics(trades_df)
+                
                 print(f"\n[{datetime.utcnow()}] TRADE CLOSED: {result} | PnL: {pnl:.4f} | Capital: {metrics['capital']:.2f}")
                 print(f"Metrics: {metric_vals} | Winrate: {metrics['wins']/metrics['trades']:.2%}")
+                if adjust:
+                    print(f"Adjustment suggestion: {adjust}")
+                
                 POSITION = None
             else:
-                print(f"[{datetime.utcnow()}] Trade running...")
+                print(f"[{datetime.utcnow()}] Trade running... Edge: {POSITION['edge']:.5f}, MFE: {POSITION['mfe']:.5f}, MAE: {POSITION['mae']:.5f}")
 
         if time.time()-LAST_REPORT >= REPORT_INTERVAL:
             save_report()

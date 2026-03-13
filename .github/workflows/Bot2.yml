@@ -1,4 +1,4 @@
-name: Run Trading Bot
+name: Run Trading Bot 2
 
 on:
   workflow_dispatch:   # Botón para ejecutar manual
